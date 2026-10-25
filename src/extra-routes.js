@@ -1,3 +1,4 @@
+import {exportTeamRoster} from './team-export.js';
 import {loginPassword} from './input-validation.js';
 import {Router} from 'express';
 import argon2 from 'argon2';
@@ -109,6 +110,10 @@ r.post(['/leader/session/team/spin','/leader/team/spin'],lead,handler(async(req,
  if(!v)fail(409,'No eligible participants');
  if(state.planPending)await c.query("SELECT set_config('club.pending_year_quotas',$1,true)",[JSON.stringify(state.yearQuotas)]);
  const ins=await c.query('INSERT INTO club.team_members(team_id,event_id,registration_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING registration_id',[t.id,t.event_id,v.id]);if(!ins.rowCount)fail(409,'Participant claimed by concurrent request');return {selected:v,team_id:t.id,remaining_slots:remainingSlots(t.team_size,n+1)};});res.json(result);
+}));
+r.get('/admin/teams/export',...admin,handler(async(req,res)=>{
+ const csv=await exportTeamRoster({query});
+ res.set('Cache-Control','private, no-store').set('Content-Disposition','attachment; filename="coding-club-all-teams.csv"').type('text/csv').send(csv);
 }));
 r.get('/admin/registrations/export',...admin,handler(async(req,res)=>{
  const ev=req.query.event_id||null;if(ev&&!uuid.safeParse(ev).success)fail(400,'Invalid event ID');

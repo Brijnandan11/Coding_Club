@@ -54,6 +54,7 @@ async function fixture(page,{admin=false,logged=false,fee=0,pending=false,noLead
   else if(path==='/admin/leaders')data=state.leaders;
   else if(path==='/admin/leaders/'+leader.id+'/reset-password')data={...leader,one_time_password:'rotated-leader-secret'};
   else if(path==='/admin/leaders/'+leader.id){Object.assign(state.leaders[0],body);data=state.leaders[0]}
+  else if(path==='/admin/teams/export')return route.fulfill({status:200,contentType:'text/csv',body:'\uFEFF"Event","Team Name","Role","Name","Academic Year","Mobile Number"\r\n"Connected workshop","Connected team","Captain","Connected Student","2","9876543210"\r\n'});
   else if(path==='/admin/teams')data=[team];
   else if(path==='/admin/events/'+event.id+'/leaders')data={...leader,one_time_password:'one-time-secret'};
   else if(path==='/admin/events/'+event.id+'/teams')data=team;
@@ -470,4 +471,11 @@ test('leader sign-in shows a useful 429 message without replaying credentials an
  await expect(page.getByRole('alert')).toContainText('Please wait 5 seconds');expect(attempts).toBe(1);
  await page.unroute('**/api/leader/login');await page.getByRole('button',{name:'Open dashboard'}).click();
  await expect(page.getByRole('heading',{name:team.name,exact:true})).toBeVisible();
+});
+
+test('admin downloads all team details as CSV from Teams tab',async({page})=>{
+ const s=await fixture(page,{admin:true,logged:true});await go(page,'admin');await page.getByRole('navigation',{name:'Admin workspace'}).getByRole('button',{name:'Teams',exact:true}).click();
+ const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Download teams CSV',exact:true}).click();const file=await pending;
+ expect(file.suggestedFilename()).toBe('coding-club-all-teams.csv');const fs=require('node:fs');const csv=fs.readFileSync(await file.path(),'utf8');expect(csv).toContain('Mobile Number');expect(csv).toContain('Connected Student');expect(csv).toContain('Captain');expect(csv.startsWith('\uFEFF')).toBe(true);
+ expect(call(s,'/admin/teams/export','GET').authorization).toBe('Bearer user-token');expect(s.unexpected).toEqual([]);
 });
