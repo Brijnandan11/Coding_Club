@@ -23,8 +23,9 @@ try{
  await request('/api/leader/team/vice-captain',{body:{registration_id:candidate.registration_id},token});
  const second=(await request('/_sandbox/login',{body:{kind:'leader',leader_id:leaders[1].id}})).data.token;
  await request('/api/leader/team/vice-captain',{body:{registration_id:candidate.registration_id},token:second,status:409});
- for(let i=0;i<8;i++)await request('/api/leader/team/spin',{body:{},token});
- const team=(await request('/api/leader/team',{token})).data;assert.equal(team.total_members,10);assert.equal(team.first_year_count,team.first_year_quota);assert.equal(team.members.filter(m=>m.is_vice_captain).length,1);
+ const initialTeam=(await request('/api/leader/team',{token})).data;
+ for(let i=0;i<initialTeam.remaining_slots;i++)await request('/api/leader/team/spin',{body:{},token});
+ const team=(await request('/api/leader/team',{token})).data;assert.equal(team.total_members,team.team_size);assert.equal(team.first_year_count,team.first_year_quota);assert.equal(team.members.filter(m=>m.is_vice_captain).length,1);
  await request('/api/leader/team/vice-captain',{body:{registration_id:null},token});
  const admin=(await request('/_sandbox/login',{body:{kind:'admin'}})).data.token;
  const payments=(await request('/api/admin/payments/upi?limit=1',{token:admin})).data;

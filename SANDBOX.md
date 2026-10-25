@@ -1,5 +1,9 @@
 # Isolated online test copy
 
+The test copy now uses 11 teams of 14 and two teams of 13 for Code Sastra's 180 confirmed players, including captains and vice-captains. Saved first-year totals remain nine teams of six and four teams of five. Academic-year plans reserve places for all four known years in every team. The two players without a recorded year remain unclassified and count toward total capacity. Existing captain choices, vice-captains and draws are preserved when upgrading the plan; a protected test-only backup is saved first. Random draws prioritize years not represented in the team, then choose among the remaining year places and students randomly. Manual additions and moves obey the same database limits.
+
+Apply the test-only upgrade with `node scripts/configure-sandbox-mixed-years.js`; it verifies the separate database identity and never reads production credentials. Test the entire allocation using `node scripts/verify-sandbox-mixed-years.js`. This creates a separate temporary QA event with the same 180-player year totals, allocates all 13 teams through the real HTTP endpoints, verifies every year/capacity/vice-captain, and removes only the QA event afterward. Existing test teams are not reset. The original `verify-sandbox.js` remains a full reset-based check intended for a fresh test copy.
+
 The `test-environment` branch contains the sandbox entry point. Production continues using `src/app.js` on `main`; it never imports the sandbox server.
 
 The sandbox has its own Neon project (`codingclub-test-copy`), database (`codingclub_sandbox`), branch (`sandbox`) and Vercel project (`codingclub-test-copy`). No production connection string or storage/email credential is deployed to it. Its entry point refuses any database outside Neon, checks the database name and verifies a unique identity stored inside the test database.

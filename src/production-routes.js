@@ -15,7 +15,7 @@ r.post('/admin/notifications/:id/retry',...admin,handler(async(req,res)=>{const 
 r.post('/admin/teams/:id/move',...admin,validate(z.object({registration_id:uuid,destination_team_id:uuid}).strict()),handler(async(req,res)=>{
  const {registration_id,destination_team_id}=req.body;if(req.params.id===destination_team_id)fail(400,'Same team');
  const result=await tx(async c=>{
-  const teams=(await c.query('SELECT t.*,e.team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id WHERE t.id=ANY($1::uuid[]) ORDER BY t.id FOR UPDATE OF t',[[req.params.id,destination_team_id]])).rows;
+  const teams=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.id=ANY($1::uuid[]) ORDER BY t.id FOR UPDATE OF t',[[req.params.id,destination_team_id]])).rows;
   if(teams.length!==2)fail(404,'Team not found');const origin=teams.find(t=>t.id===req.params.id),dest=teams.find(t=>t.id===destination_team_id);
   if(origin.event_id!==dest.event_id)fail(409,'Teams must belong to same event');if(dest.locked)fail(409,'Destination locked');
   const count=await c.query('SELECT count(*)::int AS n FROM club.team_members WHERE team_id=$1',[dest.id]);if(count.rows[0].n>=memberCapacity(dest.team_size))fail(409,'Destination full');
