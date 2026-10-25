@@ -479,3 +479,25 @@ test('admin downloads all team details as CSV from Teams tab',async({page})=>{
  expect(file.suggestedFilename()).toBe('coding-club-all-teams.csv');const fs=require('node:fs');const csv=fs.readFileSync(await file.path(),'utf8');expect(csv).toContain('Mobile Number');expect(csv).toContain('Connected Student');expect(csv).toContain('Captain');expect(csv.startsWith('\uFEFF')).toBe(true);
  expect(call(s,'/admin/teams/export','GET').authorization).toBe('Bearer user-token');expect(s.unexpected).toEqual([]);
 });
+
+test('admin tabs survive Back, Forward, refresh and the page Back link',async({page})=>{
+ await fixture(page,{admin:true,logged:true});await go(page,'admin');const nav=page.getByRole('navigation',{name:'Admin workspace'});
+ await nav.getByRole('button',{name:'Teams',exact:true}).click();await expect(page).toHaveURL(/#\/admin\?tab=Teams$/);await expect(page.getByRole('heading',{name:'Teams',exact:true})).toBeVisible();
+ await nav.getByRole('button',{name:'Events',exact:true}).click();await expect(page).toHaveURL(/#\/admin\?tab=Events$/);
+ await page.goBack();await expect(page.getByRole('heading',{name:'Teams',exact:true})).toBeVisible();
+ await page.goForward();await expect(page.getByRole('heading',{name:'Events',exact:true})).toBeVisible();
+ await page.reload();await expect(page.getByRole('heading',{name:'Events',exact:true})).toBeVisible();
+ await page.locator('.return-to-club').click();await expect(page.getByRole('heading',{name:'Teams',exact:true})).toBeVisible();
+});
+test('page Back link restores the exact events position instead of the homepage start',async({page})=>{
+ await fixture(page);await go(page,'events');await page.locator('.gallery-card-image').first().scrollIntoViewIfNeeded();const before=await page.evaluate(()=>scrollY);
+ await page.locator('.gallery-card-image').first().click();await expect(page).toHaveURL(new RegExp('#/event/'+event.id+'$'));
+ await page.locator('.return-to-club').click();await expect(page).toHaveURL(/#\/events$/);await expect.poll(()=>page.evaluate(y=>Math.abs(scrollY-y),before)).toBeLessThan(5);
+});
+test('Back restores admin scroll after delayed team data renders',async({page})=>{
+ await fixture(page,{admin:true,logged:true});await go(page,'admin?tab=Teams');await expect(page.getByRole('heading',{name:team.name,exact:true})).toBeVisible();
+ await page.evaluate(()=>scrollTo(0,650));await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(400);const before=await page.evaluate(()=>scrollY);
+ await page.evaluate(()=>location.hash='/account');await expect(page).toHaveURL(/#\/account$/);
+ await page.route('**/api/admin/teams',async route=>{await new Promise(resolve=>setTimeout(resolve,500));return route.fulfill({json:[team]})});
+ await page.goBack();await expect(page.getByRole('heading',{name:team.name,exact:true})).toBeVisible();await expect.poll(()=>page.evaluate(y=>Math.abs(scrollY-y),before)).toBeLessThan(5);
+});

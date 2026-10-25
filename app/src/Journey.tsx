@@ -12,9 +12,10 @@ export function cancelScrollNavigation(){cancelSectionScroll()}
 export function restoreNavigationPosition(position:NavigationPosition){scrollToChapter(position.section||'',position.offset||0,position.top)}
 export function scrollToChapter(id:string,offset=0,fallbackTop?:number){
  cancelSectionScroll();let tries=0,frame=0,stopped=false;
- const stop=(event?:Event)=>{if(event?.target instanceof Element&&event.target.closest('#club-preloader'))return;stopped=true;cancelAnimationFrame(frame);clearTimeout(timer);window.removeEventListener('club:motion-ready',settled);window.removeEventListener('club:loaded',settled);for(const event of ['wheel','touchstart','pointerdown','keydown'])window.removeEventListener(event,stop)};
+ const stop=(event?:Event)=>{if(event?.target instanceof Element&&event.target.closest('#club-preloader'))return;stopped=true;cancelAnimationFrame(frame);clearTimeout(timer);window.removeEventListener('club:motion-ready',settled);window.removeEventListener('club:loaded',settled);observer?.disconnect();for(const event of ['wheel','touchstart','pointerdown','keydown'])window.removeEventListener(event,stop)};
  const seek=()=>{if(stopped)return;const target=id?document.getElementById('section-'+id):null;if(target||fallbackTop!==undefined&&!id){const lenis=(window as any).__ccLenis;const destination=target?target.getBoundingClientRect().top+scrollY+offset:fallbackTop!;if(lenis){lenis.resize();lenis.scrollTo(destination,{immediate:true,force:true})}else window.scrollTo({top:destination,behavior:'instant' as ScrollBehavior});return}if(tries++<90)frame=requestAnimationFrame(seek)};
  const settled=()=>{tries=0;cancelAnimationFrame(frame);frame=requestAnimationFrame(seek)};
+ const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(settled);observer?.observe(document.getElementById('page-content')||document.body);
  const timer=setTimeout(stop,65000);cancelSectionScroll=stop;
  window.addEventListener('club:motion-ready',settled);window.addEventListener('club:loaded',settled,{once:true});
  for(const event of ['wheel','touchstart','pointerdown','keydown'])window.addEventListener(event,stop,{passive:true,once:true});
