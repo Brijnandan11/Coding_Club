@@ -37,6 +37,8 @@ async function fixture(page,{admin=false,logged=false,fee=0,pending=false,noLead
   else if(path==='/leader/event')data=event;
   else if(path==='/leader/team'&&method==='POST'){state.teamCreated=true;state.teamName=body.name;data={...team,name:body.name};status=201}
   else if(path==='/leader/team'){if(!state.teamCreated){status=404;data={error:'Team not found'}}else data={...team,name:state.teamName,leader_name:user.full_name,members:state.members,remaining_slots:2-state.members.length};}
+  else if(path==='/leader/team/vice-captain/candidates')data=[...state.members.map(m=>({...m,already_in_team:true})),...state.adminRegistrations.slice(1).filter(r=>!state.members.some(m=>m.registration_id===r.id)&&state.members.length<2).map(r=>({...r,registration_id:r.id,already_in_team:false}))];
+  else if(path==='/leader/team/vice-captain'){const id=body.registration_id;if(id&&!state.members.some(m=>m.registration_id===id)){const candidate=state.adminRegistrations.find(r=>r.id===id);state.members.push({...candidate,registration_id:id})}state.members.forEach(m=>m.is_vice_captain=m.registration_id===id);data={ok:true}}
   else if(path==='/leader/team/spin'){state.members.push({full_name:state.members.length?'Second Allocated Student':'Allocated Student',registration_code:'CC99-0000'+(state.members.length+2)});data={selected:{id:'member-'+state.members.length,...state.members.at(-1)},remaining_slots:2-state.members.length}}
   else if(path==='/health')data={database:'connected',status:'ok'};
   else if(path==='/admin/dashboard/summary')data={total_events:1,total_registrations:1};
@@ -406,4 +408,21 @@ for(const tab of ['Users','Registrations'])test('admin filters '+tab+' by year a
  await page.getByLabel('Branch',{exact:true}).selectOption('it');await expect(rows).toHaveCount(0);await expect(page.getByText('No users match the selected filters.')).toBeVisible();
  await page.getByRole('button',{name:'Clear filters',exact:true}).click();await expect(rows).toHaveCount(3);await expect(page.locator('.admin-main [role=status]')).toContainText('Showing 3 of 3 records');
  expect(s.unexpected).toEqual([]);
+});
+
+ test('leader chooses an available vice-captain, sees the role after reload and can clear it',async({page})=>{
+ const s=await fixture(page);
+ await page.addInitScript(()=>sessionStorage.setItem('cc-leader-token','leader-token'));
+ await go(page,'leader');
+ await expect(page.getByRole('heading',{name:'Choose your vice-captain'})).toBeVisible();
+ await page.getByRole('combobox',{name:/^Vice-captain/}).selectOption('66666666-6666-4666-8666-666666666666');
+ await page.getByRole('button',{name:'Save vice-captain',exact:true}).click();
+ await expect(page.locator('.list-item .pill').filter({hasText:'Vice-captain'})).toBeVisible();
+ expect(call(s,'/leader/team/vice-captain').authorization).toBe('Bearer leader-token');
+ await page.reload();
+ await expect(page.locator('.list-item .pill').filter({hasText:'Vice-captain'})).toBeVisible();
+ await page.getByRole('button',{name:'Clear vice-captain role',exact:true}).click();
+ await expect(page.locator('.list-item .pill').filter({hasText:'Vice-captain'})).toHaveCount(0);
+ await expect(page.locator('.list-item').filter({hasText:'Second Student'})).toBeVisible();
+ expect(s.members.length).toBe(1);expect(s.unexpected).toEqual([]);
 });

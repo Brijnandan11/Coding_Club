@@ -1,5 +1,13 @@
 # Deployment runbook
 
+## Team quotas and vice-captains
+
+Apply `supabase/migrations/20261025052909_team_allocation.sql` before deploying the team allocation feature. The new tables remain private to the backend. Leaders can choose an available confirmed student or an existing team member as vice-captain; choosing an available student consumes a team place. Changing or clearing the role keeps the previous student in the team. Moving or removing a member clears their vice-captain role.
+
+To configure Code Sastra's planned 13 teams, first preview `node scripts/configure-first-year-allocation.js code-sastra-2026 13 74`, then add `--apply`. The command checks the confirmed first-year count and refuses to overwrite a different plan or redistribute existing members. It saves a random ordering of nine quotas of six and four quotas of five. Existing teams receive a slot, and newly created teams automatically claim the remaining slots. Allocation stays random within each quota; remaining places are reserved when needed. A first-year leader counts toward their team's quota. After allocation, academic year changes require organizer assistance so participants cannot bypass the saved quota.
+
+Verify with `node --test test/integration/team-allocation.test.js`; its temporary 13-team event, 74 first-years, registrations, sessions and users are cleaned up afterward. The test does not modify Code Sastra's memberships.
+
 **Status:** Vercel and Render deployment configuration is prepared, but nothing has been deployed yet. The UPI workflow requires the receiving account details and QR to be checked before production use.
 
 ## Vercel frontend
