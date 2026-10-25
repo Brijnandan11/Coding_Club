@@ -56,7 +56,7 @@ try{
  const settings={databaseUrl:connection,sandboxId,accessCode,jwtSecret:saved?.jwtSecret||crypto.randomBytes(48).toString('base64url'),projectId:'quiet-cake-45017867',snapshotAt:snapshot.at};
  fs.writeFileSync(path.join(directory,'environment.json'),JSON.stringify(settings,null,2),{mode:0o600});
  const present=new Set((await target.query('SELECT bucket,path FROM sandbox_control.files')).rows.map(r=>r.bucket+'/'+r.path));
- let copied=present.size;objects=objects.filter(o=>!present.has(o.bucket_id+'/'+o.name));console.log('Database ready; '+copied+' files already copied, '+objects.length+' remaining');
+ const totalFiles=objects.length;let copied=present.size;objects=objects.filter(o=>!present.has(o.bucket_id+'/'+o.name));console.log('Database ready; '+copied+' files already copied, '+objects.length+' remaining');
  for(let offset=0;offset<objects.length;offset+=5){await Promise.all(objects.slice(offset,offset+5).map(async object=>{
   const url=source.SUPABASE_URL+'/storage/v1/object/'+object.bucket_id+'/'+object.name.split('/').map(encodeURIComponent).join('/');
   for(let attempt=0;;attempt++){
@@ -66,7 +66,7 @@ try{
     await target.query('INSERT INTO sandbox_control.files(bucket,path,content_type,bytes,baseline) VALUES($1,$2,$3,$4,true) ON CONFLICT(bucket,path) DO NOTHING',[object.bucket_id,object.name,response.headers.get('content-type')||'application/octet-stream',Buffer.from(await response.arrayBuffer())]);copied++;break;
    }catch(error){if(attempt>=3)throw error;console.log('Retrying a file transfer');}
   }
- }));if(offset%25===0)console.log('Copied '+copied+'/'+objects.length+' files')}
+ }));if(offset%25===0)console.log('Copied '+copied+'/'+totalFiles+' files')}
  await target.query('TRUNCATE sandbox_control.baseline_files');await target.query('INSERT INTO sandbox_control.baseline_files SELECT * FROM sandbox_control.files');
  fs.writeFileSync(path.join(directory,'source-counts.json'),JSON.stringify(snapshot.tables.map(t=>({table:t.name,count:t.rows.length})),null,2),{mode:0o600});
  console.log(JSON.stringify({copied_tables:snapshot.tables.length,copied_files:copied,snapshot_at:snapshot.at,users:snapshot.tables.find(t=>t.name==='users').rows.length,registrations:snapshot.tables.find(t=>t.name==='registrations').rows.length,credentials_saved:'.sandbox/environment.json'}));
