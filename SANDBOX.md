@@ -1,0 +1,15 @@
+# Isolated online test copy
+
+The `test-environment` branch contains the sandbox entry point. Production continues using `src/app.js` on `main`; it never imports the sandbox server.
+
+The sandbox has its own Neon project (`codingclub-test-copy`), database (`codingclub_sandbox`), branch (`sandbox`) and Vercel project (`codingclub-test-copy`). No production connection string or storage/email credential is deployed to it. Its entry point refuses any database outside Neon, checks the database name and verifies a unique identity stored inside the test database.
+
+`scripts/clone-sandbox.js` reads the production `club` schema and files, then copies them into the independent test database. Production is read using a read-only transaction and `pg_dump --schema-only`. The target must be empty. Passwords and leader credentials become test-only, live sessions/reset tokens are removed, and password-reset notification links are cleared. Other application records and uploaded files are copied. All private local artifacts are under the ignored `.sandbox/` directory with restricted file permissions.
+
+The whole test site and API require a separate access code. The `/_sandbox` controls offer administrator access, leader switching, missing-team preparation and reset. All test accounts and leader codes accept the test access code as their password. Creating 13 teams adds test-only leaders from available copied confirmed students. Reset restores the saved snapshot and uploaded files without contacting production.
+
+Public media and private payment evidence are stored in the independent database and served through the protected test site. New image/evidence uploads and deletions also stay there. Real payment collection is disabled. Email credentials are absent, and the sandbox blocks all external HTTP writes as an additional guard.
+
+Build with `npm ci --prefix app && node scripts/build-sandbox.cjs`. The Vercel Build Output contains the application, frontend assets and dependencies, never database data or credentials. Configure these server-only environment variables on the **test project only**: `SANDBOX_MODE=true`, `SANDBOX_ID`, `SANDBOX_ACCESS_CODE`, `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=production`, and `CORS_ORIGINS` for the test site origin. The private `.sandbox/environment.json` holds the generated local configuration.
+
+For a local check, build first and run `node scripts/start-sandbox.js`, then `node scripts/verify-sandbox.js`. Pass the online origin to the verification script to test the deployed site. Verification prepares 13 test teams, chooses a vice-captain, fills a team, checks its quota and restores the snapshot afterward.

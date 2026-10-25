@@ -9,3 +9,7 @@ app/playwright-report/
 
 # Supabase CLI state is local tooling metadata.
 supabase/.temp/
+
+# Private sandbox snapshots and test-only credentials.
+.sandbox/
+.vercel/

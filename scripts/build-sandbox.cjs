@@ -1,0 +1,12 @@
+const fs=require('node:fs'),path=require('node:path'),{execFileSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..');
+execFileSync(process.execPath,['build.cjs'],{cwd:path.join(root,'app'),env:{...process.env,API_BASE_URL:''},stdio:'inherit'});
+const output=path.join(root,'.vercel/output'),fn=path.join(output,'functions/index.func');
+fs.mkdirSync(fn,{recursive:true});
+for(const item of ['src','certs','node_modules'])fs.cpSync(path.join(root,item),path.join(fn,item),{recursive:true});
+fs.mkdirSync(path.join(fn,'app'),{recursive:true});fs.cpSync(path.join(root,'app/dist'),path.join(fn,'app/dist'),{recursive:true});
+fs.writeFileSync(path.join(fn,'package.json'),JSON.stringify({type:'module'}));
+fs.writeFileSync(path.join(fn,'index.mjs'),"export {default} from './src/sandbox-app.js';\n");
+fs.writeFileSync(path.join(fn,'.vc-config.json'),JSON.stringify({runtime:'nodejs24.x',handler:'index.mjs',launcherType:'Nodejs',supportsResponseStreaming:true}));
+fs.writeFileSync(path.join(output,'config.json'),JSON.stringify({version:3,routes:[{src:'/(.*)',dest:'/index'}]}));
+console.log('Built the isolated, password-protected test site. No database data or credentials are bundled.');
