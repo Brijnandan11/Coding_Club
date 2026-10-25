@@ -4,8 +4,8 @@ const user={id:'22222222-2222-4222-8222-222222222222',email:'student@example.inv
 const registration={id:'33333333-3333-4333-8333-333333333333',registration_code:'CC99-00001',event_id:event.id,user_id:user.id,title:event.title,full_name:user.full_name,email:user.email,status:'CONFIRMED',created_at:'2026-01-01T00:00:00Z'};
 const leader={id:'44444444-4444-4444-8444-444444444444',leader_code:'CC99-L001',event_id:event.id,user_id:user.id,full_name:user.full_name,event_title:event.title};
 const team={id:'55555555-5555-4555-8555-555555555555',name:'Connected team',event_id:event.id,leader_id:leader.id,leader_code:leader.leader_code,locked:false,team_size:3,members:[],remaining_slots:2};
-async function fixture(page,{admin=false,logged=false,fee=0,pending=false,noLeaderTeam=false,allocationReady=true,candidateFailure=false}={}){
- const state={allocationReady,candidateFailure,teamCreated:!noLeaderTeam,teamName:team.name,calls:[],registrations:pending?[{...registration,status:'PENDING_PAYMENT',registration_fee:900,registration_ref:'UPI-TEST-123456789012'}]:[],events:[{...event,registration_fee:fee}],members:[],unexpected:[],role:admin?'ADMIN':'PARTICIPANT',settings:{clubName:'Connected Club'},profile:{...user},leaders:[{...leader,is_active:true}],adminRegistrations:[{...registration},{...registration,id:'66666666-6666-4666-8666-666666666666',user_id:'77777777-7777-4777-8777-777777777777',full_name:'Second Student',registration_code:'CC99-00002'},{...registration,id:'88888888-8888-4888-8888-888888888888',user_id:'99999999-9999-4999-8999-999999999999',full_name:'Third Student',registration_code:'CC99-00003'}]};
+async function fixture(page,{admin=false,logged=false,fee=0,pending=false,noLeaderTeam=false,allocationReady=true,candidateFailure=false,planPending=false}={}){
+ const state={allocationReady,planPending,candidateFailure,teamCreated:!noLeaderTeam,teamName:team.name,calls:[],registrations:pending?[{...registration,status:'PENDING_PAYMENT',registration_fee:900,registration_ref:'UPI-TEST-123456789012'}]:[],events:[{...event,registration_fee:fee}],members:[],unexpected:[],role:admin?'ADMIN':'PARTICIPANT',settings:{clubName:'Connected Club'},profile:{...user},leaders:[{...leader,is_active:true}],adminRegistrations:[{...registration},{...registration,id:'66666666-6666-4666-8666-666666666666',user_id:'77777777-7777-4777-8777-777777777777',full_name:'Second Student',registration_code:'CC99-00002'},{...registration,id:'88888888-8888-4888-8888-888888888888',user_id:'99999999-9999-4999-8999-999999999999',full_name:'Third Student',registration_code:'CC99-00003'}]};
  await page.addInitScript(({logged})=>{if(logged)sessionStorage.setItem('cc-user-token','user-token')},{logged});
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4),method=req.method();let body;try{body=req.postDataJSON()}catch{body=req.postData()}
@@ -36,7 +36,7 @@ async function fixture(page,{admin=false,logged=false,fee=0,pending=false,noLead
   else if(path==='/leader/session')data={leader_id:leader.leader_code,event_id:event.id,user_id:user.id,full_name:user.full_name};
   else if(path==='/leader/event')data=event;
   else if(path==='/leader/team'&&method==='POST'){state.teamCreated=true;state.teamName=body.name;data={...team,name:body.name};status=201}
-  else if(path==='/leader/team'){if(!state.teamCreated){status=404;data={error:'Team not found'}}else data={...team,allocation_ready:state.allocationReady,name:state.teamName,leader_name:user.full_name,members:state.members,remaining_slots:2-state.members.length};}
+  else if(path==='/leader/team'){if(!state.teamCreated){status=404;data={error:'Team not found'}}else data={...team,allocation_ready:state.allocationReady,allocation_plan_pending:state.planPending,name:state.teamName,leader_name:user.full_name,members:state.members,remaining_slots:2-state.members.length};}
   else if(path==='/leader/team/vice-captain/candidates'&&state.candidateFailure){status=400;data={error:'Candidate list temporarily unavailable'}}
   else if(path==='/leader/team/vice-captain/candidates')data=[...state.members.map(m=>({...m,already_in_team:true})),...state.adminRegistrations.slice(1).filter(r=>!state.members.some(m=>m.registration_id===r.id)&&state.members.length<2).map(r=>({...r,registration_id:r.id,already_in_team:false}))];
   else if(path==='/leader/team/vice-captain'){const id=body.registration_id;if(id&&!state.members.some(m=>m.registration_id===id)){const candidate=state.adminRegistrations.find(r=>r.id===id);state.members.push({...candidate,registration_id:id})}state.members.forEach(m=>m.is_vice_captain=m.registration_id===id);data={ok:true}}
@@ -451,4 +451,14 @@ test('candidate failure keeps dashboard visible and retry recovers',async({page}
  s.candidateFailure=false;await page.getByRole('button',{name:'Retry candidates'}).click();
  await expect(page.getByRole('combobox',{name:/^Vice-captain/})).toBeEnabled();
  await expect(page.getByRole('option',{name:/Second Student/})).toHaveCount(1);
+});
+
+test('allocate next participant works immediately after vice selection while other teams are pending',async({page})=>{
+ const s=await fixture(page,{planPending:true});await page.addInitScript(()=>sessionStorage.setItem('cc-leader-token','leader-token'));
+ await go(page,'leader');await page.getByRole('combobox',{name:/^Vice-captain/}).selectOption('66666666-6666-4666-8666-666666666666');
+ await page.getByRole('button',{name:'Save vice-captain',exact:true}).click();
+ await expect(page.locator('.list-item .pill').filter({hasText:'Vice-captain'})).toBeVisible();
+ await page.getByRole('button',{name:'Allocate next participant'}).click();
+ await expect(page.getByRole('button',{name:'Allocate next participant'})).toBeDisabled();
+ expect(s.members.length).toBe(2);expect(call(s,'/leader/team/spin')).toBeTruthy();expect(s.unexpected).toEqual([]);
 });

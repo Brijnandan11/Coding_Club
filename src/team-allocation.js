@@ -65,6 +65,20 @@ export async function pendingYearContext(c,eventId){
  return {totals,slots};
 }
 
+// Build a feasible draw plan while reserving selected captains in uncreated slots.
+// Only the draw transaction uses these temporary quotas; final quotas are saved
+// when all actual teams exist, preserving every member already allocated.
+export async function randomAllocationState(c,team,state){
+ if(state.allocationReady)return {...state,planPending:false};
+ const captain=await c.query(`SELECT l.id FROM club.event_leaders l JOIN club.users u ON u.id=l.user_id JOIN club.registrations r ON r.user_id=l.user_id AND r.event_id=l.event_id WHERE l.id=$1 AND l.is_active AND u.is_active AND r.status='CONFIRMED'`,[team.leader_id]);
+ if(!captain.rowCount)fail(409,'Your team needs an active captain with a confirmed registration');
+ const context=await pendingYearContext(c,team.event_id);
+ if(context.slots.some(s=>!s.captain_id))fail(409,'The organiser must select all planned captains before random allocation');
+ let plan;try{plan=mixedYearPlan(context.totals,context.slots)}catch(e){fail(409,e.message)}
+ const slot=plan.find(s=>s.team_id===team.id);if(!slot)fail(409,'Team allocation slot missing');
+ return {...state,yearQuotas:slot.year_quotas,allocationReady:true,planPending:true};
+}
+
 export async function viceCaptainEligibility(c,team,state){
  if(state.allocationReady)return mixedEligibility(state);
  const eligibility=allocationEligibility(state),context=await pendingYearContext(c,team.event_id);

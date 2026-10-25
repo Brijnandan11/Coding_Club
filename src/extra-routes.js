@@ -8,7 +8,7 @@ import {query,tx} from './db.js';
 import {enqueueMail} from './notifications.js';
 import {auth,role,handler,validate,fail,audit,pagination} from './utils.js';
 import {memberCapacity,remainingSlots} from './team-capacity.js';
-import {allocationState,mixedEligibility,eligibleParticipantsSql,ensureMixedYearPlan,viceCaptainEligibility,validatePendingYearPlan} from './team-allocation.js';
+import {allocationState,mixedEligibility,eligibleParticipantsSql,ensureMixedYearPlan,randomAllocationState,viceCaptainEligibility,validatePendingYearPlan} from './team-allocation.js';
 import {chooseDrawYear} from './mixed-year-plan.js';
 const r=Router(), uuid=z.string().uuid(), str=z.string().trim();
 const admin=[auth,role('ADMIN')];
@@ -55,8 +55,9 @@ r.post('/leader/team',lead,validate(z.object({name:str.min(2).max(100)}).strict(
 r.get(['/leader/session/team','/leader/team'],lead,handler(async(req,res)=>{const out=await tx(async c=>{
  const team=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.leader_id=$1 FOR SHARE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
  const members=(await c.query('SELECT tm.registration_id,tm.is_vice_captain,p.full_name,p.academic_year,r.registration_code FROM club.team_members tm JOIN club.registrations r ON r.id=tm.registration_id JOIN club.participant_profiles p ON p.user_id=r.user_id WHERE tm.team_id=$1 ORDER BY tm.joined_at',[team.id])).rows;
- const state=await allocationState(c,team);
- return {...team,leader_name:req.leader.full_name,members,total_members:members.length+1,remaining_slots:remainingSlots(team.team_size,members.length),first_year_quota:state.quota,first_year_count:state.firstYears,year_quotas:state.yearQuotas,year_counts:state.yearCounts,allocation_ready:state.allocationReady};
+ let state=await allocationState(c,team),allocationError=null;
+ try{state=await randomAllocationState(c,team,state)}catch(e){if(e.status!==409)throw e;allocationError=e.message}
+ return {...team,allocation_plan_pending:!!state.planPending,allocation_error:allocationError,leader_name:req.leader.full_name,members,total_members:members.length+1,remaining_slots:remainingSlots(team.team_size,members.length),first_year_quota:state.quota,first_year_count:state.firstYears,year_quotas:state.yearQuotas,year_counts:state.yearCounts,allocation_ready:state.allocationReady};
  });res.json(out);
 }));
 r.get('/leader/team/vice-captain/candidates',lead,handler(async(req,res)=>{
@@ -97,14 +98,16 @@ r.post('/leader/team/vice-captain',lead,validate(z.object({registration_id:uuid.
 }));
 // This endpoint reuses the same locking and unique constraints as the existing spin endpoint.
 r.post(['/leader/session/team/spin','/leader/team/spin'],lead,handler(async(req,res)=>{const result=await tx(async c=>{
+ await c.query('SELECT id FROM club.events WHERE id=$1 FOR UPDATE',[req.leader.event_id]);
  await ensureMixedYearPlan(c,req.leader.event_id);
  const active=await c.query('SELECT id FROM club.event_leaders WHERE id=$1 AND is_active=true FOR UPDATE',[req.leader.id]);if(!active.rowCount)fail(401,'Leader inactive');
  const t=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.leader_id=$1 FOR UPDATE OF t',[req.leader.id])).rows[0];if(!t)fail(404,'Team not found');if(t.locked)fail(409,'Team locked');
  const n=Number((await c.query('SELECT count(*) n FROM club.team_members WHERE team_id=$1',[t.id])).rows[0].n);if(n>=memberCapacity(t.team_size))fail(409,'Team full');
- const state=await allocationState(c,t),eligible=mixedEligibility(state);
+ const state=await randomAllocationState(c,t,await allocationState(c,t)),eligible=mixedEligibility(state);
  const drawYear=state.yearQuotas?chooseDrawYear(state.yearQuotas,state.yearCounts):null;
  const v=(await c.query(`SELECT rg.id,rg.registration_code,p.full_name,p.academic_year ${eligibleParticipantsSql} ORDER BY CASE WHEN $5::int IS NOT NULL AND COALESCE(p.academic_year,0)=$5 THEN 0 ELSE 1 END,random() LIMIT 1 FOR UPDATE OF rg SKIP LOCKED`,[t.event_id,eligible.allowFirstYear,eligible.allowOther,eligible.allowedYears,drawYear])).rows[0];
  if(!v)fail(409,'No eligible participants');
+ if(state.planPending)await c.query("SELECT set_config('club.pending_year_quotas',$1,true)",[JSON.stringify(state.yearQuotas)]);
  const ins=await c.query('INSERT INTO club.team_members(team_id,event_id,registration_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING registration_id',[t.id,t.event_id,v.id]);if(!ins.rowCount)fail(409,'Participant claimed by concurrent request');return {selected:v,team_id:t.id,remaining_slots:remainingSlots(t.team_size,n+1)};});res.json(result);
 }));
 r.get('/admin/registrations/export',...admin,handler(async(req,res)=>{
