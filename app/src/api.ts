@@ -14,7 +14,7 @@ export async function request(path:string,{method='GET',body,kind='user',signal,
  let response:Response;
  try{response=await backendFetch(API_BASE+path,{method,headers,body:body===undefined?undefined:body instanceof FormData?body:JSON.stringify(body),signal})}catch(e:any){if(e.name==='AbortError')throw e;throw new ApiError(0,'Connection is taking longer than expected. Please retry in a moment.')}
  const text=await response.text();let data:any;try{data=JSON.parse(text)}catch{data=null}
- if(!response.ok){if(response.status===401){session.clear(kind);if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('cc:session-expired',{detail:kind}))}throw new ApiError(response.status,data?.details?.length?data.details.map((d:any)=>`${d.path}: ${d.message}`).join('; '):data?.error||`Request failed (${response.status}).`)}
+ if(!response.ok){if(response.status===401){session.clear(kind);if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('cc:session-expired',{detail:kind}))}throw new ApiError(response.status,data?.details?.length?data.details.map((d:any)=>`${d.path}: ${d.message}`).join('; '):data?.error||(response.status===429?'Too many requests. Please wait '+(Math.max(1,Math.ceil(Number(response.headers.get('Retry-After'))||60)))+' seconds before trying again.':`Request failed (${response.status}).`))}
  if(raw)return text;
  if(data===null)throw new ApiError(502,'The API returned an invalid response. Check the API URL.');
  return data;

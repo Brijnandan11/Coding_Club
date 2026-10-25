@@ -462,3 +462,12 @@ test('allocate next participant works immediately after vice selection while oth
  await expect(page.getByRole('button',{name:'Allocate next participant'})).toBeDisabled();
  expect(s.members.length).toBe(2);expect(call(s,'/leader/team/spin')).toBeTruthy();expect(s.unexpected).toEqual([]);
 });
+
+test('leader sign-in shows a useful 429 message without replaying credentials and can recover',async({page})=>{
+ await fixture(page);let attempts=0;
+ await page.route('**/api/leader/login',route=>{attempts++;return route.fulfill({status:429,headers:{'Retry-After':'5'},contentType:'text/plain',body:'Too many requests, please try again later.'})});
+ await go(page,'leader');await page.getByLabel('Leader code').fill(leader.leader_code);await page.getByLabel('Password').fill('Leader-password');await page.getByRole('button',{name:'Open dashboard'}).click();
+ await expect(page.getByRole('alert')).toContainText('Please wait 5 seconds');expect(attempts).toBe(1);
+ await page.unroute('**/api/leader/login');await page.getByRole('button',{name:'Open dashboard'}).click();
+ await expect(page.getByRole('heading',{name:team.name,exact:true})).toBeVisible();
+});

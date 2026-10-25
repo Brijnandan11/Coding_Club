@@ -3,7 +3,7 @@ import {Router} from 'express';
 import argon2 from 'argon2';
 import crypto from 'node:crypto';
 import {z} from 'zod';
-import {rateLimit} from 'express-rate-limit';
+import {createLeaderLoginLimit} from './leader-login-limit.js';
 import {query,tx} from './db.js';
 import {enqueueMail} from './notifications.js';
 import {auth,role,handler,validate,fail,audit,pagination} from './utils.js';
@@ -25,7 +25,7 @@ const lead=handler(async(req,res,next)=>{
  const {rows}=await query('SELECT l.id,l.event_id,l.user_id,l.leader_code,p.full_name,u.is_active AS user_active,l.is_active FROM club.event_leaders l JOIN club.users u ON u.id=l.user_id JOIN club.participant_profiles p ON p.user_id=l.user_id WHERE l.id=$1',[session.rows[0].leader_id]);
  if(!rows[0]?.is_active||!rows[0]?.user_active)fail(401,'Leader inactive');req.leader=rows[0];req.leaderDigest=digest;next();
 });
-r.post('/leader/login',rateLimit({windowMs:15*60_000,limit:10,standardHeaders:'draft-7',legacyHeaders:false}),validate(z.object({leader_id:str.min(3),password:loginPassword}).strict()),handler(async(req,res)=>{
+r.post('/leader/login',validate(z.object({leader_id:str.min(3).max(120),password:loginPassword}).strict()),createLeaderLoginLimit(),handler(async(req,res)=>{
  const token=crypto.randomBytes(32).toString('base64url');
  const l=await tx(async c=>{
   const {rows}=await c.query('SELECT l.id,l.event_id,l.user_id,l.leader_code,l.credential_hash,l.is_active,u.is_active AS user_active FROM club.event_leaders l JOIN club.users u ON u.id=l.user_id WHERE l.leader_code=$1 FOR UPDATE OF l',[req.body.leader_id]);
