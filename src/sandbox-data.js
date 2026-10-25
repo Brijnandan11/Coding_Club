@@ -9,7 +9,8 @@ export async function describeTables(c){
 }
 export async function captureSnapshot(c){
  const tables=await describeTables(c);
- for(const table of tables)table.rows=(await c.query('SELECT * FROM club.'+quote(table.name))).rows;
+ // Serialize on PostgreSQL so DATE values never shift through the operator's timezone.
+ for(const table of tables)table.rows=(await c.query('SELECT to_jsonb(t) AS record FROM club.'+quote(table.name)+' t')).rows.map(row=>row.record);
  const sequences=(await c.query(`SELECT sequencename FROM pg_sequences WHERE schemaname='club' ORDER BY sequencename`)).rows;
  for(const sequence of sequences)Object.assign(sequence,(await c.query('SELECT last_value::text,is_called FROM club.'+quote(sequence.sequencename))).rows[0]);
  return {at:new Date().toISOString(),tables,sequences};
