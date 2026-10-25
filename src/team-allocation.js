@@ -42,6 +42,46 @@ export function mixedEligibility(state){
  return {...eligibility,allowedYears};
 }
 
+// Preview all slots, including selected captains whose teams have not been created.
+// This lets leaders reserve a vice-captain without spending another year's places.
+export async function pendingYearContext(c,eventId){
+ const slots=(await c.query(`SELECT s.slot,s.team_id,s.team_capacity,s.first_year_quota,
+  CASE WHEN l.is_active AND u.is_active AND r.status='CONFIRMED' THEN l.id END AS captain_id,
+  CASE WHEN l.is_active AND u.is_active AND r.status='CONFIRMED' THEN COALESCE(p.academic_year,0) END AS leader_year
+  FROM club.team_allocation_slots s LEFT JOIN club.teams t ON t.id=s.team_id LEFT JOIN club.event_leaders l ON l.id=t.leader_id
+  LEFT JOIN club.users u ON u.id=l.user_id LEFT JOIN club.participant_profiles p ON p.user_id=l.user_id
+  LEFT JOIN club.registrations r ON r.event_id=s.event_id AND r.user_id=l.user_id
+  WHERE s.event_id=$1 AND s.team_capacity IS NOT NULL ORDER BY s.slot`,[eventId])).rows;
+ const totals=Object.fromEntries((await c.query(`SELECT COALESCE(p.academic_year,0) AS year,count(*)::int n FROM club.registrations r JOIN club.users u ON u.id=r.user_id JOIN club.participant_profiles p ON p.user_id=r.user_id WHERE r.event_id=$1 AND r.status='CONFIRMED' AND u.is_active GROUP BY COALESCE(p.academic_year,0)`,[eventId])).rows.map(r=>[r.year,r.n]));
+ const members=(await c.query(`SELECT m.team_id,COALESCE(p.academic_year,0) AS year,count(*)::int n FROM club.team_members m JOIN club.registrations r ON r.id=m.registration_id JOIN club.participant_profiles p ON p.user_id=r.user_id WHERE m.event_id=$1 GROUP BY m.team_id,COALESCE(p.academic_year,0)`,[eventId])).rows;
+ const captains=(await c.query(`SELECT l.id,COALESCE(p.academic_year,0) AS year FROM club.event_leaders l JOIN club.users u ON u.id=l.user_id JOIN club.participant_profiles p ON p.user_id=l.user_id JOIN club.registrations r ON r.user_id=l.user_id AND r.event_id=l.event_id WHERE l.event_id=$1 AND l.is_active AND u.is_active AND r.status='CONFIRMED' AND NOT EXISTS(SELECT 1 FROM club.teams t WHERE t.leader_id=l.id) AND NOT EXISTS(SELECT 1 FROM club.team_members m WHERE m.registration_id=r.id) ORDER BY l.created_at,l.id`,[eventId])).rows;
+ let next=0;
+ for(const slot of slots){
+  slot.counts=Object.fromEntries(members.filter(m=>m.team_id===slot.team_id).map(m=>[m.year,m.n]));
+  if(!slot.captain_id&&captains[next]){const captain=captains[next++];slot.captain_id=captain.id;slot.leader_year=captain.year;}
+  if(slot.captain_id)slot.counts[slot.leader_year]=(slot.counts[slot.leader_year]||0)+1;
+  else slot.leader_year=undefined;
+ }
+ return {totals,slots};
+}
+
+export async function viceCaptainEligibility(c,team,state){
+ if(state.allocationReady)return mixedEligibility(state);
+ const eligibility=allocationEligibility(state),context=await pendingYearContext(c,team.event_id);
+ const index=context.slots.findIndex(s=>s.team_id===team.id);if(index<0)fail(409,'Team allocation slot missing');
+ const allowedYears=[];
+ for(const year of Object.keys(context.totals)){
+  const slots=context.slots.map(s=>({...s,counts:{...s.counts}}));slots[index].counts[year]=(slots[index].counts[year]||0)+1;
+  try{mixedYearPlan(context.totals,slots);allowedYears.push(Number(year))}catch{}
+ }
+ return {...eligibility,allowedYears};
+}
+
+export async function validatePendingYearPlan(c,eventId){
+ const context=await pendingYearContext(c,eventId);if(!context.slots.length)return;
+ try{mixedYearPlan(context.totals,context.slots)}catch{fail(409,'This choice would leave too few places for another academic year. Choose another confirmed student or ask the organiser to review captain assignments.');}
+}
+
 export async function configureMixedYearPlan(c,eventId){
  const slots=(await c.query('SELECT s.slot,s.first_year_quota,s.team_capacity,s.team_id,p.academic_year AS leader_year FROM club.team_allocation_slots s LEFT JOIN club.teams t ON t.id=s.team_id LEFT JOIN club.event_leaders l ON l.id=t.leader_id LEFT JOIN club.participant_profiles p ON p.user_id=l.user_id WHERE s.event_id=$1 ORDER BY s.slot FOR UPDATE OF s',[eventId])).rows;
  if(!slots.length||slots.some(s=>!s.team_id||!s.team_capacity))fail(409,'Create all planned teams before configuring mixed-year allocation');
@@ -72,6 +112,7 @@ export const eligibleParticipantsSql=`FROM club.registrations rg
  JOIN club.users u ON u.id=rg.user_id
  WHERE rg.event_id=$1 AND rg.status='CONFIRMED' AND u.is_active=true
  AND NOT EXISTS(SELECT 1 FROM club.teams t JOIN club.event_leaders l ON l.id=t.leader_id WHERE t.event_id=rg.event_id AND l.user_id=rg.user_id)
+ AND NOT EXISTS(SELECT 1 FROM club.event_leaders l WHERE l.event_id=rg.event_id AND l.user_id=rg.user_id AND l.is_active AND EXISTS(SELECT 1 FROM club.team_allocation_slots pending WHERE pending.event_id=rg.event_id AND pending.team_capacity IS NOT NULL AND pending.year_quotas IS NULL))
  AND NOT EXISTS(SELECT 1 FROM club.team_members m WHERE m.event_id=rg.event_id AND m.registration_id=rg.id)
  AND (CASE WHEN p.academic_year=1 THEN $2::boolean ELSE $3::boolean END)
  AND ($4::int[] IS NULL OR COALESCE(p.academic_year,0)=ANY($4::int[]))`;

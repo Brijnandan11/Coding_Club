@@ -9,16 +9,17 @@ import UPIVerification from './UPIVerification';
 
 export function LeaderPortal({toast}:any){
  const [credentials,setCredentials]=useState({leader_id:'',password:''}),[leader,setLeader]=useState<any>(null),[event,setEvent]=useState<any>(null),[team,setTeam]=useState<any>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[checking,setChecking]=useState(true),[picked,setPicked]=useState<any>(null),[teamName,setTeamName]=useState('');
- const [candidates,setCandidates]=useState<any[]>([]),[viceCaptain,setViceCaptain]=useState(''),[allocating,setAllocating]=useState(false);const active=useRef(true);
+ const [candidates,setCandidates]=useState<any[]>([]),[viceCaptain,setViceCaptain]=useState(''),[allocating,setAllocating]=useState(false),[candidateError,setCandidateError]=useState(''),[candidatesLoading,setCandidatesLoading]=useState(false);const active=useRef(true),generation=useRef(0);
+ async function loadCandidates(t:any,current=generation.current){setCandidatesLoading(true);setCandidateError('');try{const choices=t?await get('/leader/team/vice-captain/candidates',{kind:'leader'}):[];if(active.current&&current===generation.current)setCandidates(choices)}catch(e:any){if(active.current&&current===generation.current){setCandidates([]);setCandidateError(e.message)}}finally{if(active.current&&current===generation.current)setCandidatesLoading(false)}}
  async function load(){
+  const current=++generation.current;
   const [me,ev]=await Promise.all([get('/leader/session',{kind:'leader'}),get('/leader/event',{kind:'leader'})]);let t;
   try{t=await get('/leader/team',{kind:'leader'})}catch(e:any){if(e.status!==404)throw e;t=null}
-  const choices=t?await get('/leader/team/vice-captain/candidates',{kind:'leader'}):[];
-  if(active.current){setLeader(me);setEvent(ev);setTeam(t);setCandidates(choices);setViceCaptain(t?.members.find((m:any)=>m.is_vice_captain)?.registration_id||'')}
+  if(active.current&&current===generation.current){setLeader(me);setEvent(ev);setTeam(t);setCandidates([]);setViceCaptain(t?.members.find((m:any)=>m.is_vice_captain)?.registration_id||'');await loadCandidates(t,current)}
  }
- useEffect(()=>{active.current=true;if(session.get('leader'))load().catch(e=>setError(e.message)).finally(()=>setChecking(false));else setChecking(false);const expired=(e:any)=>{if(e.detail==='leader'){setLeader(null);setTeam(null)}};window.addEventListener('cc:session-expired',expired);return()=>{active.current=false;window.removeEventListener('cc:session-expired',expired)}},[]);
+ useEffect(()=>{active.current=true;if(session.get('leader'))load().catch(e=>setError(e.message)).finally(()=>setChecking(false));else setChecking(false);const expired=(e:any)=>{if(e.detail==='leader'){generation.current++;setLeader(null);setTeam(null)}};window.addEventListener('cc:session-expired',expired);return()=>{active.current=false;generation.current++;window.removeEventListener('cc:session-expired',expired)}},[]);
  async function login(e:any){e.preventDefault();setBusy(true);setError('');try{const data=await post('/leader/login',credentials,'leader');session.set(data.token,'leader');setCredentials({...credentials,password:''});await load()}catch(e:any){setError(e.message)}finally{setBusy(false)}}
- async function logout(){setBusy(true);try{await post('/leader/logout',undefined,'leader');session.clear('leader');setLeader(null);setTeam(null);setPicked(null)}catch(e:any){setError(e.message)}finally{setBusy(false)}}
+ async function logout(){setBusy(true);try{await post('/leader/logout',undefined,'leader');session.clear('leader');generation.current++;setLeader(null);setTeam(null);setPicked(null)}catch(e:any){setError(e.message)}finally{setBusy(false)}}
  async function createTeam(e:any){e.preventDefault();if(busy)return;setBusy(true);setError('');try{await post('/leader/team',{name:teamName},'leader');await load();setTeamName('');toast('Your team is ready. Choose your vice-captain and allocate teammates.')}catch(e:any){setError(e.message)}finally{setBusy(false)}}
  async function spin(){if(busy)return;setBusy(true);setAllocating(true);setError('');setPicked(null);try{const result=await post('/leader/team/spin',undefined,'leader');await load();setPicked({...result.selected,name:result.selected.full_name});toast(result.selected.full_name+' joined your team.')}catch(e:any){setError(e.message)}finally{setBusy(false);setAllocating(false)}}
  async function saveViceCaptain(id:string|null){if(busy)return;setBusy(true);setError('');try{await post('/leader/team/vice-captain',{registration_id:id},'leader');await load();toast(id?'Vice-captain saved.':'Vice-captain role cleared.')}catch(e:any){setError(e.message)}finally{setBusy(false)}}
@@ -31,6 +32,15 @@ export function LeaderPortal({toast}:any){
    <Button type="submit" disabled={busy}>{busy?'Signing in…':'Open dashboard'}</Button>
   </form>:<>
    <div className="portal-toolbar"><div><Label>{leader.full_name||'Team leader'} · {leader.leader_id}</Label><h2>{event?.title}</h2><p>{event?.venue} · {fmt(event?.event_date?.slice(0,10))}</p></div><Button kind="outline" onClick={logout} disabled={busy}>Sign out</Button></div>
+     <form className="form-card" onSubmit={e=>{e.preventDefault();void saveViceCaptain(viceCaptain)}}>
+      <h3>Choose your vice-captain</h3><p>Select a confirmed student from your team or the available students. Choosing an available student adds them to your team and counts toward its quotas.</p>
+      <Field label="Vice-captain" value={viceCaptain} disabled={busy||!team||candidatesLoading||!!candidateError} options={candidates.map((m:any)=>({value:m.registration_id,label:m.full_name+' · '+m.registration_code+(m.academic_year?' · Year '+m.academic_year:'')+(m.already_in_team?' · In your team':' · Available')}))} onChange={(e:any)=>setViceCaptain(e.target.value)}/>
+      {!team?<Notice>Create your team below to choose your vice-captain.</Notice>:candidatesLoading?<Notice>Loading confirmed students…</Notice>:candidateError?<><Notice type="error">{candidateError}</Notice><Button kind="outline" disabled={busy} onClick={()=>loadCandidates(team)}>Retry candidates</Button></>:!candidates.length&&<p>No eligible students are available yet.</p>}
+      {team?.allocation_ready===false&&<Notice>You can choose your vice-captain now. Random allocation opens after the organiser completes all team setup.</Notice>}
+      <div className="action-group"><Button type="submit" disabled={busy||!team||candidatesLoading||!!candidateError||!viceCaptain||team.members.some((m:any)=>m.is_vice_captain&&m.registration_id===viceCaptain)}>Save vice-captain</Button>{team?.members.some((m:any)=>m.is_vice_captain)&&<Button kind="outline" disabled={busy} onClick={()=>saveViceCaptain(null)}>Clear vice-captain role</Button>}</div>
+      <p>Clearing or changing the role keeps the previous vice-captain in your team.</p>
+     </form>
+   <Button kind="outline" disabled={busy||candidatesLoading} onClick={()=>{setBusy(true);setError('');load().catch(e=>setError(e.message)).finally(()=>setBusy(false))}}>Refresh dashboard</Button>
    {!team?<form className="form-card" onSubmit={createTeam}><h2>Create your team</h2><p>You are the team leader. Your team can have {event?.team_size} people total: you and {Math.max(0,(event?.team_size||1)-1)} other students.</p><Field label="Team name" minLength={2} maxLength={100} value={teamName} onChange={(e:any)=>setTeamName(e.target.value)}/><Button type="submit" disabled={busy||teamName.trim().length<2}>{busy?'Creating team…':'Create my team'}</Button></form>:<div className="admin-two">
     <article className="form-card"><h2>{team.name}</h2><p>{team.members.length+1}/{team.team_size} team members · {team.remaining_slots} slots left</p><span className="pill">{team.locked?'Locked':'Allocation open'}</span>
      {!team.year_quotas&&team.first_year_quota!=null&&<Notice>First-year students: {team.first_year_count}/{team.first_year_quota}. Your team has a fixed quota of {team.first_year_quota}; random allocation reserves these places.</Notice>}
@@ -38,13 +48,7 @@ export function LeaderPortal({toast}:any){
      {team.year_quotas&&<><h3>Your team's year mix</h3><p>Captain and vice-captain count toward the totals. Random draws prioritize years not represented yet, then fill the remaining places.</p><div className="table-scroll"><table><thead><tr><th>Academic year</th><th>Players</th><th>Planned total</th></tr></thead><tbody>{Object.entries(team.year_quotas).map(([year,quota]:any)=><tr key={year}><td>{year==='0'?'Year not provided':'Year '+year}</td><td>{team.year_counts?.[year]||0}</td><td>{quota}</td></tr>)}</tbody></table></div></>}
      <div className="list-item"><b>{team.leader_name||leader.full_name||'You'}</b><small>Team leader</small></div>
      {team.members.map((m:any)=><div className="list-item" key={m.registration_id||m.registration_code}><div><b>{m.full_name}</b>{m.is_vice_captain&&<span className="pill">Vice-captain</span>}</div><small>{m.registration_code}{m.academic_year?' · Year '+m.academic_year:''}</small></div>)}
-     <form onSubmit={e=>{e.preventDefault();void saveViceCaptain(viceCaptain)}}>
-      <h3>Choose your vice-captain</h3><p>Select a confirmed student from your team or the available students. Choosing an available student adds them to your team and counts toward its quotas.</p>
-      <Field label="Vice-captain" value={viceCaptain} disabled={busy} options={candidates.map((m:any)=>({value:m.registration_id,label:m.full_name+' · '+m.registration_code+(m.academic_year?' · Year '+m.academic_year:'')+(m.already_in_team?' · In your team':' · Available')}))} onChange={(e:any)=>setViceCaptain(e.target.value)}/>
-      {!candidates.length&&<p>No eligible students are available yet.</p>}
-      <div className="action-group"><Button type="submit" disabled={busy||!viceCaptain||team.members.some((m:any)=>m.is_vice_captain&&m.registration_id===viceCaptain)}>Save vice-captain</Button>{team.members.some((m:any)=>m.is_vice_captain)&&<Button kind="outline" disabled={busy} onClick={()=>saveViceCaptain(null)}>Clear vice-captain role</Button>}</div>
-      <p>Clearing or changing the role keeps the previous vice-captain in your team.</p>
-     </form>
+
     </article>
     <article className="form-card"><AllocationSpinner spinning={allocating} shown={picked?.name||''} picked={picked} full={!team.remaining_slots} available={[]}/><Button onClick={spin} disabled={busy||team.locked||!team.remaining_slots||team.allocation_ready===false}>{allocating?'Allocating…':'Allocate next participant'}</Button><p>Allocate one random student at a time until your team is full.</p></article>
    </div>}
