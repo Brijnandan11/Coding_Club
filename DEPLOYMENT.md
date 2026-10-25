@@ -1,5 +1,13 @@
 # Deployment runbook
 
+## Production team allocation: 182 players
+
+Code Sastra reserves 13 teams of 14 players, including captain and vice-captain. Its 75 first-years are split into ten quotas of six and three quotas of five. Random allocation covers all recorded academic years and reserves the remaining year places. Players without a recorded year are counted separately. A vice-captain consumes an ordinary team place.
+
+Apply `sql/005_mixed_year_team_allocation.sql` before releasing this code. The operator command `node scripts/publish-production-allocation.js` previews production counts; `--apply` saves a private backup under the ignored `.production-backups/` directory and updates capacities/quotas without changing registrations or selecting captains. The command refuses unexpected counts or existing member assignments.
+
+Select real confirmed captains in Admin → Leaders. Create their teams in Admin → Teams, and replace any inactive or unregistered captain on an existing team. The year plan finalizes automatically once all 13 teams have active confirmed captains. Until then, random draws and new member/vice-captain additions are blocked, including direct database writes. Test-site accounts, shared test passwords and automatic test captain selection are not part of production.
+
 ## Team quotas and vice-captains
 
 Apply `supabase/migrations/20261025052909_team_allocation.sql` before deploying the team allocation feature. The new tables remain private to the backend. Leaders can choose an available confirmed student or an existing team member as vice-captain; choosing an available student consumes a team place. Changing or clearing the role keeps the previous student in the team. Moving or removing a member clears their vice-captain role.

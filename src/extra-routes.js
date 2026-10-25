@@ -8,7 +8,8 @@ import {query,tx} from './db.js';
 import {enqueueMail} from './notifications.js';
 import {auth,role,handler,validate,fail,audit,pagination} from './utils.js';
 import {memberCapacity,remainingSlots} from './team-capacity.js';
-import {allocationState,allocationEligibility,eligibleParticipantsSql} from './team-allocation.js';
+import {allocationState,mixedEligibility,eligibleParticipantsSql,ensureMixedYearPlan} from './team-allocation.js';
+import {chooseDrawYear} from './mixed-year-plan.js';
 const r=Router(), uuid=z.string().uuid(), str=z.string().trim();
 const admin=[auth,role('ADMIN')];
 // Admin read endpoints include drafts and operational records; credentials never leave these lists.
@@ -38,45 +39,49 @@ r.get(['/leader/session','/leader/me'],lead,(req,res)=>res.json({leader_id:req.l
 r.get('/leader/event',lead,handler(async(req,res)=>{const a=await query('SELECT id,title,slug,event_date,start_time,end_time,venue,team_size,status FROM club.events WHERE id=$1',[req.leader.event_id]);if(!a.rows[0])fail(404,'Event not found');res.json(a.rows[0]);}));
 r.post('/leader/team',lead,validate(z.object({name:str.min(2).max(100)}).strict()),handler(async(req,res)=>{
  const team=await tx(async c=>{
+  await c.query('SELECT id FROM club.events WHERE id=$1 FOR UPDATE',[req.leader.event_id]);
   const leader=(await c.query('SELECT l.id,e.status FROM club.event_leaders l JOIN club.events e ON e.id=l.event_id WHERE l.id=$1 AND l.is_active=true FOR UPDATE OF l',[req.leader.id])).rows[0];
   if(!leader)fail(401,'Leader inactive');
   if(!['OPEN','CLOSED'].includes(leader.status))fail(409,'Team creation is unavailable for this event');
   const registration=await c.query("SELECT id FROM club.registrations WHERE event_id=$1 AND user_id=$2 AND status='CONFIRMED' FOR UPDATE",[req.leader.event_id,req.leader.user_id]);
   if(!registration.rowCount)fail(409,'Your event registration must be confirmed');
+  if((await c.query('SELECT 1 FROM club.team_members m JOIN club.registrations r ON r.id=m.registration_id WHERE m.event_id=$1 AND r.user_id=$2',[req.leader.event_id,req.leader.user_id])).rowCount)fail(409,'Remove this participant from their current team before making them captain');
   if((await c.query('SELECT id FROM club.teams WHERE leader_id=$1',[req.leader.id])).rowCount)fail(409,'You already have a team');
   const row=(await c.query('INSERT INTO club.teams(event_id,leader_id,name) VALUES($1,$2,$3) RETURNING *',[req.leader.event_id,req.leader.id,req.body.name])).rows[0];
+  await ensureMixedYearPlan(c,req.leader.event_id);
   await audit(c,req.leader.user_id,'LEADER_CREATED_TEAM',row.id,{event_id:req.leader.event_id});return row;
  });res.status(201).json(team);
 }));
 r.get(['/leader/session/team','/leader/team'],lead,handler(async(req,res)=>{const out=await tx(async c=>{
- const team=(await c.query('SELECT t.*,e.team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id WHERE t.leader_id=$1 FOR SHARE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
+ const team=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.leader_id=$1 FOR SHARE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
  const members=(await c.query('SELECT tm.registration_id,tm.is_vice_captain,p.full_name,p.academic_year,r.registration_code FROM club.team_members tm JOIN club.registrations r ON r.id=tm.registration_id JOIN club.participant_profiles p ON p.user_id=r.user_id WHERE tm.team_id=$1 ORDER BY tm.joined_at',[team.id])).rows;
  const state=await allocationState(c,team);
- return {...team,leader_name:req.leader.full_name,members,total_members:members.length+1,remaining_slots:remainingSlots(team.team_size,members.length),first_year_quota:state.quota,first_year_count:state.firstYears};
+ return {...team,leader_name:req.leader.full_name,members,total_members:members.length+1,remaining_slots:remainingSlots(team.team_size,members.length),first_year_quota:state.quota,first_year_count:state.firstYears,year_quotas:state.yearQuotas,year_counts:state.yearCounts,allocation_ready:state.allocationReady};
  });res.json(out);
 }));
 r.get('/leader/team/vice-captain/candidates',lead,handler(async(req,res)=>{
  const out=await tx(async c=>{
-  const team=(await c.query('SELECT t.*,e.team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id WHERE t.leader_id=$1 FOR SHARE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
+  const team=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.leader_id=$1 FOR SHARE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
   const members=(await c.query(`SELECT m.registration_id,p.full_name,p.academic_year,r.registration_code,true AS already_in_team FROM club.team_members m JOIN club.registrations r ON r.id=m.registration_id JOIN club.participant_profiles p ON p.user_id=r.user_id JOIN club.users u ON u.id=r.user_id WHERE m.team_id=$1 AND r.status='CONFIRMED' AND u.is_active=true ORDER BY p.full_name`,[team.id])).rows;
-  const state=await allocationState(c,team);if(state.members>=memberCapacity(team.team_size)||team.locked)return members;
-  const eligible=allocationEligibility(state);
-  const available=(await c.query(`SELECT rg.id AS registration_id,p.full_name,p.academic_year,rg.registration_code,false AS already_in_team ${eligibleParticipantsSql} ORDER BY p.full_name,rg.id`,[team.event_id,eligible.allowFirstYear,eligible.allowOther])).rows;
+  const state=await allocationState(c,team);if(state.members>=memberCapacity(team.team_size)||team.locked||!state.allocationReady)return members;
+  const eligible=mixedEligibility(state);
+  const available=(await c.query(`SELECT rg.id AS registration_id,p.full_name,p.academic_year,rg.registration_code,false AS already_in_team ${eligibleParticipantsSql} ORDER BY p.full_name,rg.id`,[team.event_id,eligible.allowFirstYear,eligible.allowOther,eligible.allowedYears])).rows;
   return [...members,...available];
  });res.json(out);
 }));
 r.post('/leader/team/vice-captain',lead,validate(z.object({registration_id:uuid.nullable()}).strict()),handler(async(req,res)=>{
  const result=await tx(async c=>{
+  await ensureMixedYearPlan(c,req.leader.event_id);
   const active=await c.query('SELECT id FROM club.event_leaders WHERE id=$1 AND is_active=true FOR UPDATE',[req.leader.id]);if(!active.rowCount)fail(401,'Leader inactive');
-  const team=(await c.query('SELECT t.*,e.team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id WHERE t.leader_id=$1 FOR UPDATE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
+  const team=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.leader_id=$1 FOR UPDATE OF t',[req.leader.id])).rows[0];if(!team)fail(404,'Team not found');
   const id=req.body.registration_id;
   if(id){
    const existing=(await c.query("SELECT m.registration_id FROM club.team_members m JOIN club.registrations r ON r.id=m.registration_id JOIN club.users u ON u.id=r.user_id WHERE m.team_id=$1 AND m.registration_id=$2 AND r.status='CONFIRMED' AND u.is_active=true FOR UPDATE OF r",[team.id,id])).rows[0];
    if(!existing){
     if(team.locked)fail(409,'Team locked; choose an existing member');
-    const state=await allocationState(c,team),eligible=allocationEligibility(state);
-    const candidate=(await c.query(`SELECT rg.id ${eligibleParticipantsSql} AND rg.id=$4 FOR UPDATE OF rg`,[team.event_id,eligible.allowFirstYear,eligible.allowOther,id])).rows[0];
-    if(!candidate)fail(409,'Student is unavailable or does not fit your first-year quota');
+    const state=await allocationState(c,team),eligible=mixedEligibility(state);
+    const candidate=(await c.query(`SELECT rg.id ${eligibleParticipantsSql} AND rg.id=$5 FOR UPDATE OF rg`,[team.event_id,eligible.allowFirstYear,eligible.allowOther,eligible.allowedYears,id])).rows[0];
+    if(!candidate)fail(409,'Student is unavailable or does not fit the remaining academic-year places');
     const inserted=await c.query('INSERT INTO club.team_members(team_id,event_id,registration_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING registration_id',[team.id,team.event_id,id]);if(!inserted.rowCount)fail(409,'Student was selected by another team. Choose another student.');
    }
   }
@@ -88,11 +93,13 @@ r.post('/leader/team/vice-captain',lead,validate(z.object({registration_id:uuid.
 }));
 // This endpoint reuses the same locking and unique constraints as the existing spin endpoint.
 r.post(['/leader/session/team/spin','/leader/team/spin'],lead,handler(async(req,res)=>{const result=await tx(async c=>{
+ await ensureMixedYearPlan(c,req.leader.event_id);
  const active=await c.query('SELECT id FROM club.event_leaders WHERE id=$1 AND is_active=true FOR UPDATE',[req.leader.id]);if(!active.rowCount)fail(401,'Leader inactive');
- const t=(await c.query('SELECT t.*,e.team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id WHERE t.leader_id=$1 FOR UPDATE OF t',[req.leader.id])).rows[0];if(!t)fail(404,'Team not found');if(t.locked)fail(409,'Team locked');
+ const t=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.leader_id=$1 FOR UPDATE OF t',[req.leader.id])).rows[0];if(!t)fail(404,'Team not found');if(t.locked)fail(409,'Team locked');
  const n=Number((await c.query('SELECT count(*) n FROM club.team_members WHERE team_id=$1',[t.id])).rows[0].n);if(n>=memberCapacity(t.team_size))fail(409,'Team full');
- const state=await allocationState(c,t),eligible=allocationEligibility(state);
- const v=(await c.query(`SELECT rg.id,rg.registration_code,p.full_name,p.academic_year ${eligibleParticipantsSql} ORDER BY random() LIMIT 1 FOR UPDATE OF rg SKIP LOCKED`,[t.event_id,eligible.allowFirstYear,eligible.allowOther])).rows[0];
+ const state=await allocationState(c,t),eligible=mixedEligibility(state);
+ const drawYear=state.yearQuotas?chooseDrawYear(state.yearQuotas,state.yearCounts):null;
+ const v=(await c.query(`SELECT rg.id,rg.registration_code,p.full_name,p.academic_year ${eligibleParticipantsSql} ORDER BY CASE WHEN $5::int IS NOT NULL AND COALESCE(p.academic_year,0)=$5 THEN 0 ELSE 1 END,random() LIMIT 1 FOR UPDATE OF rg SKIP LOCKED`,[t.event_id,eligible.allowFirstYear,eligible.allowOther,eligible.allowedYears,drawYear])).rows[0];
  if(!v)fail(409,'No eligible participants');
  const ins=await c.query('INSERT INTO club.team_members(team_id,event_id,registration_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING registration_id',[t.id,t.event_id,v.id]);if(!ins.rowCount)fail(409,'Participant claimed by concurrent request');return {selected:v,team_id:t.id,remaining_slots:remainingSlots(t.team_size,n+1)};});res.json(result);
 }));
@@ -103,13 +110,14 @@ r.get('/admin/registrations/export',...admin,handler(async(req,res)=>{
  res.type('text/csv').set('Content-Disposition','attachment; filename="coding-club-registrations.csv"').send([fields.join(','),...q.rows.map(row=>fields.map(f=>cell(row[f])).join(','))].join('\r\n'));
 }));
 r.post('/admin/teams/:id/members',...admin,validate(z.object({registration_id:uuid}).strict()),handler(async(req,res)=>{const out=await tx(async c=>{
- const t=(await c.query('SELECT t.*,e.team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id WHERE t.id=$1 FOR UPDATE OF t',[req.params.id])).rows[0];if(!t)fail(404,'Team not found');if(t.locked)fail(409,'Team locked');
+ const t=(await c.query('SELECT t.*,COALESCE(s.team_capacity,e.team_size) AS team_size FROM club.teams t JOIN club.events e ON e.id=t.event_id LEFT JOIN club.team_allocation_slots s ON s.team_id=t.id WHERE t.id=$1 FOR UPDATE OF t',[req.params.id])).rows[0];if(!t)fail(404,'Team not found');if(t.locked)fail(409,'Team locked');
+ await ensureMixedYearPlan(c,t.event_id);
  const count=Number((await c.query('SELECT count(*) n FROM club.team_members WHERE team_id=$1',[t.id])).rows[0].n);if(count>=memberCapacity(t.team_size))fail(409,'Team full');
  const reg=(await c.query("SELECT r.id FROM club.registrations r WHERE r.id=$1 AND r.event_id=$2 AND r.status='CONFIRMED' AND NOT EXISTS (SELECT 1 FROM club.event_leaders l WHERE l.event_id=r.event_id AND l.user_id=r.user_id) FOR UPDATE OF r",[req.body.registration_id,t.event_id])).rows[0];if(!reg)fail(409,'Participant not eligible');
  const row=await c.query('INSERT INTO club.team_members(team_id,event_id,registration_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING *',[t.id,t.event_id,reg.id]);if(!row.rowCount)fail(409,'Already in team');await audit(c,req.user.id,'ADMIN_ADDED_TEAM_MEMBER',t.id,{registration_id:reg.id});return row.rows[0];});res.status(201).json(out);
 }));
 r.delete('/admin/teams/:id/members/:registrationId',...admin,handler(async(req,res)=>{const out=await tx(async c=>{const t=(await c.query('SELECT * FROM club.teams WHERE id=$1 FOR UPDATE',[req.params.id])).rows[0];if(!t)fail(404,'Team not found');const q=await c.query('DELETE FROM club.team_members WHERE team_id=$1 AND registration_id=$2 RETURNING *',[t.id,req.params.registrationId]);if(!q.rowCount)fail(404,'Member not found');await audit(c,req.user.id,'ADMIN_REMOVED_TEAM_MEMBER',t.id,{registration_id:req.params.registrationId});return q.rows[0]});res.json(out);}));
-r.patch('/admin/teams/:id/leader',...admin,validate(z.object({leader_id:uuid}).strict()),handler(async(req,res)=>{const row=await tx(async c=>{const t=(await c.query('SELECT * FROM club.teams WHERE id=$1 FOR UPDATE',[req.params.id])).rows[0];if(!t)fail(404,'Team not found');const q=await c.query('UPDATE club.teams SET leader_id=$1 WHERE id=$2 RETURNING *',[req.body.leader_id,t.id]);await audit(c,req.user.id,'ADMIN_CHANGED_LEADER',t.id,{leader_id:req.body.leader_id});return q.rows[0]});res.json(row);}));
+r.patch('/admin/teams/:id/leader',...admin,validate(z.object({leader_id:uuid}).strict()),handler(async(req,res)=>{const row=await tx(async c=>{const t=(await c.query('SELECT * FROM club.teams WHERE id=$1 FOR UPDATE',[req.params.id])).rows[0];if(!t)fail(404,'Team not found');const eligible=(await c.query("SELECT l.id FROM club.event_leaders l JOIN club.users u ON u.id=l.user_id JOIN club.registrations r ON r.user_id=l.user_id AND r.event_id=l.event_id WHERE l.id=$1 AND l.event_id=$2 AND l.is_active AND u.is_active AND r.status='CONFIRMED' AND NOT EXISTS(SELECT 1 FROM club.team_members m WHERE m.registration_id=r.id)",[req.body.leader_id,t.event_id])).rowCount;if(!eligible)fail(409,'Captain must be active, confirmed and not allocated to another team');const q=await c.query('UPDATE club.teams SET leader_id=$1 WHERE id=$2 RETURNING *',[req.body.leader_id,t.id]);await ensureMixedYearPlan(c,t.event_id);await audit(c,req.user.id,'ADMIN_CHANGED_LEADER',t.id,{leader_id:req.body.leader_id});return q.rows[0]});res.json(row);}));
 r.get('/admin/teams/:id/members',...admin,handler(async(req,res)=>{const a=await query('SELECT m.*,p.full_name,p.academic_year,r.registration_code FROM club.team_members m JOIN club.registrations r ON r.id=m.registration_id JOIN club.participant_profiles p ON p.user_id=r.user_id WHERE m.team_id=$1 ORDER BY m.joined_at',[req.params.id]);res.json(a.rows);}));
 r.get('/admin/dashboard/summary',...admin,handler(async(req,res)=>{const {rows}=await query(`SELECT (SELECT count(*) FROM club.events)::int total_events,(SELECT count(*) FROM club.events WHERE event_date>=current_date AND status NOT IN('ARCHIVED','CANCELLED'))::int upcoming_events,(SELECT count(*) FROM club.events WHERE event_date<current_date)::int past_events,(SELECT count(*) FROM club.registrations)::int total_registrations,(SELECT count(*) FROM club.registrations WHERE status='CONFIRMED')::int confirmed_registrations,(SELECT count(*) FROM club.registrations WHERE status='PENDING')::int pending_registrations,(SELECT count(*) FROM club.event_leaders)::int total_leaders,(SELECT count(*) FROM club.teams)::int total_teams`);res.json(rows[0]);}));
 // Admin user management: full account lifecycle without direct database access.
